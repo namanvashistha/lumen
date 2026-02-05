@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lumen</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      width: 360px;
+      padding: 16px;
+      background: #1a1a2e;
+      color: #eaeaea;
+    }
+    
+    h1 {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 12px;
+      color: #00d9ff;
+    }
+    
+    .config-section {
+      margin-bottom: 16px;
+    }
+    
+    label {
+      display: block;
+      font-size: 12px;
+      color: #888;
+      margin-bottom: 4px;
+    }
+    
+    input {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid #333;
+      border-radius: 6px;
+      background: #0f0f1a;
+      color: #eaeaea;
+      font-size: 13px;
+      margin-bottom: 10px;
+    }
+    
+    input:focus {
+      outline: none;
+      border-color: #00d9ff;
+    }
+    
+    .btn-group {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    
+    button {
+      width: 100%;
+      padding: 10px 16px;
+      border: none;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    
+    #saveConfig {
+      background: #333;
+      color: #eaeaea;
+      margin-bottom: 8px;
+    }
+    
+    #saveConfig:hover {
+      background: #444;
+    }
+    
+    #startBtn {
+      background: linear-gradient(135deg, #0077b5, #00a0dc);
+      color: #fff;
+    }
+    
+    #startBtn:hover:not(:disabled) {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(0, 160, 220, 0.3);
+    }
+    
+    #fullScrapeBtn {
+      background: linear-gradient(135deg, #00b894, #00cec9);
+      color: #fff;
+    }
+    
+    #fullScrapeBtn:hover:not(:disabled) {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(0, 206, 201, 0.3);
+    }
+    
+    #resumeBtn {
+      background: linear-gradient(135deg, #fdcb6e, #f39c12);
+      color: #1a1a2e;
+      display: none;
+    }
+    
+    #resumeBtn:hover:not(:disabled) {
+      transform: translateY(-1px);
+    }
+    
+    #stopBtn {
+      background: #e74c3c;
+      color: #fff;
+    }
+    
+    #stopBtn:hover {
+      background: #c0392b;
+    }
+    
+    button:disabled {
+      background: #333 !important;
+      color: #666 !important;
+      cursor: not-allowed;
+      transform: none !important;
+      box-shadow: none !important;
+    }
+    
+    #status {
+      margin-top: 12px;
+      padding: 10px;
+      border-radius: 6px;
+      font-size: 11px;
+      background: #0f0f1a;
+      border: 1px solid #333;
+      min-height: 80px;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+    
+    .status-line {
+      margin-bottom: 4px;
+      color: #888;
+      word-break: break-word;
+    }
+    
+    .status-line.success {
+      color: #4ade80;
+    }
+    
+    .status-line.error {
+      color: #f87171;
+    }
+    
+    .status-line.info {
+      color: #00d9ff;
+    }
+    
+    .warning-text {
+      font-size: 10px;
+      color: #666;
+      margin-top: 8px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <h1>🔗 Lumen</h1>
+  
+  <div class="config-section">
+    <label for="botToken">Telegram Bot Token</label>
+    <input type="password" id="botToken" placeholder="123456789:ABCdefGHI...">
+    
+    <label for="chatId">Telegram Chat ID</label>
+    <input type="text" id="chatId" placeholder="-1001234567890">
+    
+    <button id="saveConfig">Save Config</button>
+  </div>
+  
+  <div class="btn-group">
+    <button id="startBtn">Extract List Only</button>
+    <button id="fullScrapeBtn">Full Scrape (List + Profiles)</button>
+    <button id="resumeBtn">Resume Scraping</button>
+    <button id="stopBtn">Stop & Clear</button>
+  </div>
+  
+  <div id="status">
+    <div class="status-line">Ready. Navigate to LinkedIn Connections page.</div>
+  </div>
+  
+  <p class="warning-text">⚠️ Full scrape takes ~1 min per profile to avoid detection</p>
+  
+  <script src="popup.js"></script>
+</body>
+</html>
