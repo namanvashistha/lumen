@@ -19,11 +19,15 @@ console.log('[Lumen] Instance started');
 // ============================================
 const CONFIG = {
   SCROLL_DELAY: 4000, // Wait 4s for LinkedIn to load more
-  PROFILE_DELAY: 75000, // 75 seconds between profiles
+  PROFILE_DELAY_MIN: 60000, // Min 60 seconds between profiles
+  PROFILE_DELAY_MAX: 120000, // Max 120 seconds between profiles
   PAGE_WAIT: 4000,
   MODAL_WAIT: 3000,
   MAX_RETRIES: 2,
   MAX_NO_CHANGE: 5, // Allow 5 scrolls with no new content before stopping
+  BATCH_SIZE: 10, // Number of profiles to scrape before taking a break
+  BATCH_BREAK_MIN: 5, // Min minutes to wait after batch
+  BATCH_BREAK_MAX: 10, // Max minutes to wait after batch
 };
 
 // ============================================
@@ -31,6 +35,11 @@ const CONFIG = {
 // ============================================
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Generate random delay in range (more human-like)
+function getRandomDelay(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
 // Log to popup only (not Telegram)
@@ -53,18 +62,23 @@ function notifyTelegram(msg) {
 // ============================================
 // Storage Functions
 // ============================================
-async function saveProgress(connections, index) {
+async function saveProgress(connections, index, batchCount = 0) {
   await chrome.storage.local.set({
     lumen_connections: connections,
     lumen_index: index,
+    lumen_batch_count: batchCount,
     lumen_timestamp: Date.now()
   });
 }
 
 async function loadProgress() {
-  const data = await chrome.storage.local.get(['lumen_connections', 'lumen_index', 'lumen_timestamp']);
+  const data = await chrome.storage.local.get(['lumen_connections', 'lumen_index', 'lumen_batch_count', 'lumen_timestamp']);
   if (data.lumen_connections && data.lumen_index !== undefined) {
-    return { connections: data.lumen_connections, index: data.lumen_index };
+    return { 
+      connections: data.lumen_connections, 
+      index: data.lumen_index,
+      batchCount: data.lumen_batch_count || 0
+    };
   }
   return null;
 }
@@ -87,7 +101,7 @@ async function getContactsDB() {
   return data.lumen_contacts_db || {};
 }
 
-async function saveContactToDB(contact) {
+async function saveContactToDB(contact, status = 'partial') {
   const username = extractUsername(contact.profileUrl);
   if (!username) return false;
   
@@ -98,11 +112,12 @@ async function saveContactToDB(contact) {
     profileUrl: contact.profileUrl,
     email: contact.email || null,
     phone: contact.phone || null,
+    status: status,
     scrapedAt: Date.now()
   };
   
   await chrome.storage.local.set({ lumen_contacts_db: db });
-  log(`💾 Saved to DB: ${contact.name} (${Object.keys(db).length} total)`);
+  log(`💾 Saved to DB: ${contact.name} [${status}] (${Object.keys(db).length} total)`);
   return true;
 }
 
@@ -112,6 +127,19 @@ async function isAlreadyScraped(profileUrl) {
   
   const db = await getContactsDB();
   return db.hasOwnProperty(username);
+}
+
+async function getPartialRecords() {
+  const db = await getContactsDB();
+  const partial = [];
+  
+  for (const [username, contact] of Object.entries(db)) {
+    if (contact.status === 'partial') {
+      partial.push({ username, ...contact });
+    }
+  }
+  
+  return partial;
 }
 
 // ============================================
@@ -177,30 +205,34 @@ async function extractConnectionsList() {
     // Find all profile links in the main content area
     const links = document.querySelectorAll('a[href*="/in/"]');
     
-    links.forEach(link => {
+    for (const link of links) {
       // Only process links that are in the connections list (not header/footer)
       const isInMainContent = link.closest('main') !== null;
-      if (!isInMainContent) return;
+      if (!isInMainContent) continue;
       
       const url = link.href.split('?')[0].replace(/\/$/, '');
-      if (!url.includes('/in/')) return;
+      if (!url.includes('/in/')) continue;
       
       // Skip if already have this connection
-      if (connections.has(url)) return;
+      if (connections.has(url)) continue;
       
-      // Extract connection details (name, description, company)
+      // Extract connection details (name)
       const details = extractConnectionDetails(link);
       
       if (details) {
-        connections.set(url, { 
+        const contact = { 
           ...details,
-          company: '', // Will be extracted from profile page
+          company: '',
           profileUrl: url, 
           email: null, 
           phone: null 
-        });
+        };
+        connections.set(url, contact);
+        
+        // Save to DB immediately with 'partial' status
+        await saveContactToDB(contact, 'partial');
       }
-    });
+    }
     
     const newCount = connections.size - startCount;
     
@@ -408,7 +440,7 @@ async function continueProfileScraping() {
     return;
   }
   
-  const { connections, index } = progress;
+  const { connections, index, batchCount } = progress;
   const conn = connections[index];
   
   log(`Resuming profile ${index + 1}/${connections.length}: ${conn.name}`);
@@ -433,10 +465,9 @@ async function continueProfileScraping() {
   if (company) {
     conn.company = company; // Update with more reliable company name from profile
   }
-  conn.scraped = true;
   
-  // Save to persistent database
-  await saveContactToDB(conn);
+  // Save to persistent database with 'complete' status
+  await saveContactToDB(conn, 'complete');
   
   // Notify popup of progress (no Telegram for contact data)
   const emailIcon = email ? '📧' : '';
@@ -450,26 +481,46 @@ async function continueProfileScraping() {
     total: connections.length
   });
   
-  // Move to next - skip already scraped
+  // Increment batch counter
+  const newBatchCount = batchCount + 1;
+  
+  // Move to next
   let nextIndex = index + 1;
   let skipped = 0;
   
+  // Skip any records that are already complete
   while (nextIndex < connections.length) {
-    const alreadyDone = await isAlreadyScraped(connections[nextIndex].profileUrl);
-    if (!alreadyDone) break;
-    log(`⏭️ Skipping ${connections[nextIndex].name} (already in database)`);
+    const username = extractUsername(connections[nextIndex].profileUrl);
+    const db = await getContactsDB();
+    const record = db[username];
+    
+    if (!record || record.status === 'partial') break; // Need to scrape this one
+    
+    log(`⏭️ Skipping ${connections[nextIndex].name} (status: ${record.status})`);
     skipped++;
     nextIndex++;
   }
   
   if (skipped > 0) {
-    log(`Skipped ${skipped} already-scraped profiles`);
+    log(`Skipped ${skipped} complete profiles`);
   }
   
   if (nextIndex < connections.length) {
-    await saveProgress(connections, nextIndex);
-    log(`Waiting ${CONFIG.PROFILE_DELAY / 1000}s before next profile...`);
-    await sleep(CONFIG.PROFILE_DELAY);
+    // Check if we need a batch break
+    if (newBatchCount >= CONFIG.BATCH_SIZE) {
+      const breakMinutes = getRandomDelay(CONFIG.BATCH_BREAK_MIN, CONFIG.BATCH_BREAK_MAX);
+      const breakMs = breakMinutes * 60 * 1000;
+      log(`🛋️ Batch complete (${CONFIG.BATCH_SIZE} profiles)! Taking a ${breakMinutes}-minute break...`);
+      notifyTelegram(`🛋️ Completed batch of ${CONFIG.BATCH_SIZE} profiles. Taking ${breakMinutes}-minute break before continuing.`);
+      await saveProgress(connections, nextIndex, 0); // Reset batch counter
+      await sleep(breakMs);
+    } else {
+      await saveProgress(connections, nextIndex, newBatchCount);
+    }
+    
+    const delay = getRandomDelay(CONFIG.PROFILE_DELAY_MIN, CONFIG.PROFILE_DELAY_MAX);
+    log(`Waiting ${Math.round(delay / 1000)}s before next profile... (batch: ${newBatchCount % CONFIG.BATCH_SIZE}/${CONFIG.BATCH_SIZE})`);
+    await sleep(delay);
     await scrapeProfile(connections[nextIndex], nextIndex, connections.length);
   } else {
     // Done!
@@ -488,31 +539,8 @@ async function continueProfileScraping() {
 // Main Actions
 // ============================================
 async function startListExtraction() {
-  log('Starting list extraction...');
-  
-  if (!window.location.href.includes('linkedin.com/mynetwork/invite-connect/connections')) {
-    logError('Not on connections page!');
-    return;
-  }
-  
-  const connections = await extractConnectionsList();
-  
-  if (connections.length === 0) {
-    logError('No connections found!');
-    return;
-  }
-  
-  // Notify popup (no Telegram for data - only observability)
-  chrome.runtime.sendMessage({
-    type: 'EXTRACTION_COMPLETE',
-    count: connections.length,
-    connections: connections
-  });
-}
-
-async function startFullScrape() {
-  log('Starting full scrape...');
-  notifyTelegram('🚀 Starting full scrape...');
+  log('Starting quick extract...');
+  notifyTelegram('📜 Starting quick extract (creating partial records)...');
   
   if (!window.location.href.includes('linkedin.com/mynetwork/invite-connect/connections')) {
     logError('Not on connections page!');
@@ -520,65 +548,76 @@ async function startFullScrape() {
     return;
   }
   
-  const connections = await extractConnectionsList();
+  // Phase 1 only: Scroll and save partial records
+  log('📜 Scrolling to collect all connections...');
+  await extractConnectionsList();
   
-  if (connections.length === 0) {
-    logError('No connections found!');
-    notifyTelegram('❌ Error: No connections found on page');
-    return;
-  }
+  const db = await getContactsDB();
+  const totalRecords = Object.keys(db).length;
+  const partialRecords = await getPartialRecords();
   
-  // Filter out already scraped connections
-  let startIndex = 0;
-  let skipped = 0;
+  log(`✅ Quick extract complete! ${totalRecords} total in DB (${partialRecords.length} partial)`);
+  notifyTelegram(`✅ Quick extract complete! ${totalRecords} records in database (${partialRecords.length} ready to scrape)`);
   
-  for (let i = 0; i < connections.length; i++) {
-    const alreadyDone = await isAlreadyScraped(connections[i].profileUrl);
-    if (!alreadyDone) {
-      startIndex = i;
-      break;
-    }
-    skipped++;
-    if (i === connections.length - 1) {
-      startIndex = connections.length; // All done
-    }
-  }
+  // Notify popup
+  chrome.runtime.sendMessage({
+    type: 'EXTRACTION_COMPLETE',
+    count: totalRecords,
+    partial: partialRecords.length
+  });
+}
+
+async function startFullScrape() {
+  log('Starting profile scraping...');
+  notifyTelegram('🔍 Starting to complete partial records...');
   
-  if (skipped > 0) {
-    log(`⏭️ Skipping ${skipped} already-scraped profiles`);
-  }
+  // Get all partial records from database
+  const partialRecords = await getPartialRecords();
   
-  if (startIndex >= connections.length) {
-    log('✅ All connections already scraped!');
-    notifyTelegram('✅ All connections already in database!');
+  if (partialRecords.length === 0) {
+    log('⚠️ No partial records found! Run Quick Extract first.');
+    notifyTelegram('⚠️ No partial records to scrape. Please run Quick Extract first.');
     chrome.runtime.sendMessage({
-      type: 'SCRAPING_COMPLETE',
-      connections: connections,
-      failedProfiles: []
+      type: 'STATUS',
+      text: '⚠️ No partial records found. Click "Collect Connections" first to create records.',
+      level: 'error'
     });
     return;
   }
   
-  const toScrape = connections.length - startIndex;
-  log(`Found ${connections.length} connections. Starting from #${startIndex + 1}...`);
-  notifyTelegram(`📊 Found ${connections.length} connections, ${toScrape} to scrape (${skipped} already done)`);
-  await saveProgress(connections, startIndex);
+  log(`🔍 Found ${partialRecords.length} partial records to complete`);
+  notifyTelegram(`📊 Starting to scrape ${partialRecords.length} profiles...`);
+  
+  // Save partial records as progress and start scraping
+  await saveProgress(partialRecords, 0);
   await sleep(2000);
-  await scrapeProfile(connections[startIndex], startIndex, connections.length);
+  await scrapeProfile(partialRecords[0], 0, partialRecords.length);
 }
 
 async function resumeScrape() {
   log('Resuming scrape...');
-  const progress = await loadProgress();
   
-  if (!progress) {
-    log('No scrape to resume');
+  // Check if there are partial records to scrape
+  const partialRecords = await getPartialRecords();
+  
+  if (partialRecords.length === 0) {
+    log('No partial records to scrape');
+    const progress = await loadProgress();
+    if (progress) {
+      // Continue with existing progress
+      const { connections, index } = progress;
+      log(`Resuming from ${index + 1}/${connections.length}`);
+      await scrapeProfile(connections[index], index, connections.length);
+    } else {
+      log('No scrape to resume');
+    }
     return;
   }
   
-  const { connections, index } = progress;
-  log(`Resuming from ${index + 1}/${connections.length}`);
-  await scrapeProfile(connections[index], index, connections.length);
+  // Start from first partial record
+  log(`Found ${partialRecords.length} partial records to complete`);
+  await saveProgress(partialRecords, 0);
+  await scrapeProfile(partialRecords[0], 0, partialRecords.length);
 }
 
 // ============================================
