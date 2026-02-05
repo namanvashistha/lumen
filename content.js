@@ -67,6 +67,47 @@ async function clearProgress() {
 }
 
 // ============================================
+// Contact Database Functions
+// ============================================
+function extractUsername(profileUrl) {
+  // Extract username from URL: linkedin.com/in/john-smith-123 → john-smith-123
+  const match = profileUrl.match(/\/in\/([^\/\?]+)/);
+  return match ? match[1].toLowerCase() : null;
+}
+
+async function getContactsDB() {
+  const data = await chrome.storage.local.get('lumen_contacts_db');
+  return data.lumen_contacts_db || {};
+}
+
+async function saveContactToDB(contact) {
+  const username = extractUsername(contact.profileUrl);
+  if (!username) return false;
+  
+  const db = await getContactsDB();
+  db[username] = {
+    name: contact.name,
+    description: contact.description || '',
+    profileUrl: contact.profileUrl,
+    email: contact.email || null,
+    phone: contact.phone || null,
+    scrapedAt: Date.now()
+  };
+  
+  await chrome.storage.local.set({ lumen_contacts_db: db });
+  log(`💾 Saved to DB: ${contact.name} (${Object.keys(db).length} total)`);
+  return true;
+}
+
+async function isAlreadyScraped(profileUrl) {
+  const username = extractUsername(profileUrl);
+  if (!username) return false;
+  
+  const db = await getContactsDB();
+  return db.hasOwnProperty(username);
+}
+
+// ============================================
 // Extraction: Scroll and Get Connections
 // ============================================
 async function extractConnectionsList() {
@@ -345,6 +386,10 @@ async function continueProfileScraping() {
   const { email, phone } = await extractContactInfo();
   conn.email = email;
   conn.phone = phone;
+  conn.scraped = true;
+  
+  // Save to persistent database
+  await saveContactToDB(conn);
   
   // Send to Telegram
   chrome.runtime.sendMessage({
@@ -360,8 +405,22 @@ async function continueProfileScraping() {
     }
   });
   
-  // Move to next
-  const nextIndex = index + 1;
+  // Move to next - skip already scraped
+  let nextIndex = index + 1;
+  let skipped = 0;
+  
+  while (nextIndex < connections.length) {
+    const alreadyDone = await isAlreadyScraped(connections[nextIndex].profileUrl);
+    if (!alreadyDone) break;
+    log(`⏭️ Skipping ${connections[nextIndex].name} (already in database)`);
+    skipped++;
+    nextIndex++;
+  }
+  
+  if (skipped > 0) {
+    log(`Skipped ${skipped} already-scraped profiles`);
+  }
+  
   if (nextIndex < connections.length) {
     await saveProgress(connections, nextIndex);
     log(`Waiting ${CONFIG.PROFILE_DELAY / 1000}s before next profile...`);
@@ -425,10 +484,40 @@ async function startFullScrape() {
     return;
   }
   
-  log(`Found ${connections.length} connections. Starting profile scraping...`);
-  await saveProgress(connections, 0);
+  // Filter out already scraped connections
+  let startIndex = 0;
+  let skipped = 0;
+  
+  for (let i = 0; i < connections.length; i++) {
+    const alreadyDone = await isAlreadyScraped(connections[i].profileUrl);
+    if (!alreadyDone) {
+      startIndex = i;
+      break;
+    }
+    skipped++;
+    if (i === connections.length - 1) {
+      startIndex = connections.length; // All done
+    }
+  }
+  
+  if (skipped > 0) {
+    log(`⏭️ Skipping ${skipped} already-scraped profiles`);
+  }
+  
+  if (startIndex >= connections.length) {
+    log('✅ All connections already scraped!');
+    chrome.runtime.sendMessage({
+      type: 'SCRAPING_COMPLETE',
+      connections: connections,
+      failedProfiles: []
+    });
+    return;
+  }
+  
+  log(`Found ${connections.length} connections. Starting from #${startIndex + 1}...`);
+  await saveProgress(connections, startIndex);
   await sleep(2000);
-  await scrapeProfile(connections[0], 0, connections.length);
+  await scrapeProfile(connections[startIndex], startIndex, connections.length);
 }
 
 async function resumeScrape() {

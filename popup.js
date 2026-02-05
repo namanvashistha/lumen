@@ -16,6 +16,8 @@ const saveConfigBtn = document.getElementById('saveConfig');
 const testTelegramBtn = document.getElementById('testTelegram');
 const checkQueueBtn = document.getElementById('checkQueue');
 const exportCsvBtn = document.getElementById('exportCsvBtn');
+const clearDbBtn = document.getElementById('clearDbBtn');
+const dbCountSpan = document.getElementById('dbCount');
 const botTokenInput = document.getElementById('botToken');
 const chatIdInput = document.getElementById('chatId');
 const progressSection = document.getElementById('progressSection');
@@ -23,7 +25,6 @@ const progressBar = document.getElementById('progressBar');
 const progressText = document.getElementById('progressText');
 const etaText = document.getElementById('etaText');
 
-let lastExtractedConnections = null;
 let scrapeStartTime = null;
 
 // ============================================
@@ -55,6 +56,9 @@ async function loadConfig() {
     chatIdInput.value = config.telegramChatId;
   }
   
+  // Load and display contacts DB count
+  await updateDbCount();
+  
   // Check for active scraping session
   const progress = await chrome.storage.local.get(['lumen_connections', 'lumen_current_index']);
   if (progress.lumen_connections && progress.lumen_current_index !== undefined) {
@@ -68,30 +72,27 @@ async function loadConfig() {
       updateProgress(progress.lumen_current_index, progress.lumen_connections.length);
     }
   }
-  
-  // Check for last extracted connections
-  const lastData = await chrome.storage.local.get('lumen_last_extraction');
-  if (lastData.lumen_last_extraction) {
-    lastExtractedConnections = lastData.lumen_last_extraction;
-    exportCsvBtn.style.display = 'block';
-  }
 }
 
-function exportToCSV() {
-  if (!lastExtractedConnections || lastExtractedConnections.length === 0) {
-    addStatus('No data to export', 'error');
+async function exportToCSV() {
+  const db = await chrome.storage.local.get('lumen_contacts_db');
+  const contactsDb = db.lumen_contacts_db || {};
+  const contacts = Object.values(contactsDb);
+  
+  if (contacts.length === 0) {
+    addStatus('No contacts in database to export', 'error');
     return;
   }
   
   // Build CSV content
-  const headers = ['Name', 'Description', 'Profile URL', 'Email', 'Phone', 'Scraped'];
-  const rows = lastExtractedConnections.map(conn => [
+  const headers = ['Name', 'Description', 'Profile URL', 'Email', 'Phone', 'Scraped At'];
+  const rows = contacts.map(conn => [
     conn.name || '',
     conn.description || '',
     conn.profileUrl || '',
     conn.email || '',
     conn.phone || '',
-    conn.scraped ? 'Yes' : 'No'
+    conn.scrapedAt ? new Date(conn.scrapedAt).toLocaleString() : ''
   ]);
   
   const csvContent = [
@@ -104,11 +105,28 @@ function exportToCSV() {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `linkedin-connections-${new Date().toISOString().split('T')[0]}.csv`;
+  a.download = `linkedin-contacts-${new Date().toISOString().split('T')[0]}.csv`;
   a.click();
   URL.revokeObjectURL(url);
   
-  addStatus(`📥 Exported ${lastExtractedConnections.length} connections to CSV`, 'success');
+  addStatus(`📥 Exported ${contacts.length} contacts to CSV`, 'success');
+}
+
+async function updateDbCount() {
+  const db = await chrome.storage.local.get('lumen_contacts_db');
+  const contactsDb = db.lumen_contacts_db || {};
+  const count = Object.keys(contactsDb).length;
+  dbCountSpan.textContent = count;
+}
+
+async function clearDatabase() {
+  if (!confirm('⚠️ Delete ALL saved contacts? This cannot be undone.')) {
+    return;
+  }
+  
+  await chrome.storage.local.remove('lumen_contacts_db');
+  await updateDbCount();
+  addStatus('🗑️ Contact database cleared', 'info');
 }
 
 async function saveConfig() {
@@ -404,6 +422,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const phoneIcon = message.hasPhone ? '📱' : '';
       addStatus(`[${message.index}/${message.total}] ${message.name} ${emailIcon}${phoneIcon}`, 'success');
       updateProgress(message.index, message.total);
+      updateDbCount(); // Refresh count
       break;
       
     case 'TELEGRAM_ERROR':
@@ -456,6 +475,7 @@ fullScrapeBtn.addEventListener('click', startFullScrape);
 resumeBtn.addEventListener('click', resumeScrape);
 stopBtn.addEventListener('click', stopScrape);
 exportCsvBtn.addEventListener('click', exportToCSV);
+clearDbBtn.addEventListener('click', clearDatabase);
 
 // Load config on popup open
 loadConfig();
