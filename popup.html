@@ -177,20 +177,35 @@
     <input type="text" id="chatId" placeholder="-1001234567890">
     
     <button id="saveConfig">Save Config</button>
+    <button id="testTelegram" style="background: #555; color: #00d9ff; margin-top: 4px;">Test Connection</button>
+  </div>
+  
+  <div id="progressSection" style="display: none; margin-bottom: 12px; padding: 10px; background: #0f0f1a; border: 1px solid #333; border-radius: 6px;">
+    <div style="display: flex; justify-content: space-between; margin-bottom: 4px; font-size: 11px; color: #888;">
+      <span id="progressText">0 / 0</span>
+      <span id="etaText">ETA: --</span>
+    </div>
+    <div style="width: 100%; height: 6px; background: #333; border-radius: 3px; overflow: hidden;">
+      <div id="progressBar" style="height: 100%; width: 0%; background: linear-gradient(90deg, #00d9ff, #0077b5); transition: width 0.3s;"></div>
+    </div>
   </div>
   
   <div class="btn-group">
-    <button id="startBtn">Extract List Only</button>
-    <button id="fullScrapeBtn">Full Scrape (List + Profiles)</button>
-    <button id="resumeBtn">Resume Scraping</button>
-    <button id="stopBtn">Stop & Clear</button>
+    <button id="startBtn">🚀 Quick Extract (Names Only)</button>
+    <button id="fullScrapeBtn">🔍 Full Scrape (With Contact Info)</button>
+    <button id="exportCsvBtn" style="background: #6c5ce7; display: none;">📥 Download as CSV</button>
+    <button id="resumeBtn">⏯️ Resume Scraping</button>
+    <button id="stopBtn">🛑 Stop & Clear</button>
   </div>
   
   <div id="status">
-    <div class="status-line">Ready. Navigate to LinkedIn Connections page.</div>
+    <div class="status-line">Ready. Make sure you're logged into LinkedIn.</div>
   </div>
   
-  <p class="warning-text">⚠️ Full scrape takes ~1 min per profile to avoid detection</p>
+  <div style="font-size: 10px; color: #888; margin-top: 8px; padding: 8px; background: #0f0f1a; border-radius: 4px;">
+    <div style="margin-bottom: 4px;">💡 <b>Quick Extract:</b> Fast (~2 min) - names & profile URLs</div>
+    <div>⚠️ <b>Full Scrape:</b> Slow (~1 min/profile) - emails & phones</div>
+  </div>
   
   <script src="popup.js"></script>
 </body>
