@@ -19,7 +19,7 @@ console.log('[Lumen] Instance started');
 // ============================================
 const CONFIG = {
   SCROLL_DELAY: 4000, // Wait 4s for LinkedIn to load more
-  PROFILE_DELAY: 10, // 75 seconds between profiles
+  PROFILE_DELAY: 75000, // 75 seconds between profiles
   PAGE_WAIT: 4000,
   MODAL_WAIT: 3000,
   MAX_RETRIES: 2,
@@ -94,7 +94,6 @@ async function saveContactToDB(contact) {
   const db = await getContactsDB();
   db[username] = {
     name: contact.name,
-    description: contact.description || '',
     company: contact.company || '',
     profileUrl: contact.profileUrl,
     email: contact.email || null,
@@ -118,6 +117,44 @@ async function isAlreadyScraped(profileUrl) {
 // ============================================
 // Extraction: Scroll and Get Connections
 // ============================================
+function extractConnectionDetails(link) {
+  let name = '';
+
+  // Get the parent container first
+  const container = link.closest('li') || link.closest('[class*="card"]') || link.parentElement?.parentElement;
+
+  // Method 1: Find name from visible span (not aria-hidden) inside link
+  const visibleSpans = link.querySelectorAll('span:not([aria-hidden])');
+  for (const span of visibleSpans) {
+    const text = span.textContent.trim();
+    if (text && text.length > 2 && text.length < 100) {
+      name = text;
+      break;
+    }
+  }
+
+  // Method 2: If no visible span, try first line of link text
+  if (!name) {
+    const linkText = link.textContent.trim();
+    // Split by newlines and take first non-empty line
+    const lines = linkText.split('\n').map(l => l.trim()).filter(l => l && l.length > 2);
+    if (lines.length > 0) {
+      name = lines[0];
+    }
+  }
+
+  // Clean up name
+  name = name.replace(/^View\s+/i, '').replace(/['']s profile$/i, '').trim();
+
+  // Validate name
+  if (name && name.length > 2 && !name.toLowerCase().includes('message')) {
+    return { name };
+  }
+  
+  return null;
+}
+
+
 async function extractConnectionsList() {
   log('Starting connections extraction...');
   
@@ -151,126 +188,13 @@ async function extractConnectionsList() {
       // Skip if already have this connection
       if (connections.has(url)) return;
       
-      // Extract name and description separately
-      let name = '';
-      let description = '';
+      // Extract connection details (name, description, company)
+      const details = extractConnectionDetails(link);
       
-      // LinkedIn connection cards have:
-      // - Name in the link itself (visible text, not aria-hidden)
-      // - Description/occupation in a separate span outside the link
-      
-      // Get the parent container first
-      const container = link.closest('li') || link.closest('[class*="card"]') || link.parentElement?.parentElement;
-      
-      // Method 1: Find name from visible span (not aria-hidden) inside link
-      const visibleSpans = link.querySelectorAll('span:not([aria-hidden])');
-      for (const span of visibleSpans) {
-        const text = span.textContent.trim();
-        if (text && text.length > 2 && text.length < 100) {
-          name = text;
-          break;
-        }
-      }
-      
-      // Method 2: If no visible span, try first line of link text
-      if (!name) {
-        const linkText = link.textContent.trim();
-        // Split by newlines and take first non-empty line
-        const lines = linkText.split('\n').map(l => l.trim()).filter(l => l && l.length > 2);
-        if (lines.length > 0) {
-          name = lines[0];
-        }
-      }
-      
-      // Now find description and company in container (outside the name link)
-      let company = '';
-      
-      if (container) {
-        // Look for occupation/headline spans with specific classes
-        const occupationSelectors = [
-          'span[class*="occupation"]',
-          'span[class*="headline"]', 
-          'span[class*="subtitle"]',
-          '.mn-connection-card__occupation',
-          '.t-14.t-black--light.t-normal'
-        ];
-        
-        for (const selector of occupationSelectors) {
-          const el = container.querySelector(selector);
-          if (el) {
-            description = el.textContent.trim();
-            break;
-          }
-        }
-        
-        // Look for company name - usually in a separate element
-        const companySelectors = [
-          'span[class*="company"]',
-          'span[class*="organization"]',
-          '.mn-connection-card__company',
-          '.entity-result__primary-subtitle',
-          'span.t-black--light'
-        ];
-        
-        for (const selector of companySelectors) {
-          const el = container.querySelector(selector);
-          if (el) {
-            const text = el.textContent.trim();
-            // Make sure it's not the same as description
-            if (text && text !== description) {
-              company = text;
-              break;
-            }
-          }
-        }
-        
-        // Fallback: find secondary spans that aren't name or description
-        if (!company) {
-          const allContainerSpans = container.querySelectorAll('span');
-          let foundDescription = false;
-          for (const span of allContainerSpans) {
-            if (link.contains(span)) continue;
-            
-            const text = span.textContent.trim();
-            if (!text || text.length < 3 || text.length > 200) continue;
-            if (text === name || name.includes(text)) continue;
-            if (text.includes('View') && text.includes('profile')) continue;
-            if (text.toLowerCase() === 'message') continue;
-            if (text.match(/^\d+\s*(mutual|connections)/i)) continue;
-            if (text.match(/^Connected\s/i)) continue;
-            
-            // First valid span is description, second is company
-            if (!foundDescription && !description) {
-              description = text;
-              foundDescription = true;
-            } else if (foundDescription && text !== description) {
-              company = text;
-              break;
-            }
-          }
-        }
-      }
-      
-      // Clean up name - remove any description that got concatenated
-      if (description && name.includes(description)) {
-        name = name.replace(description, '').trim();
-      }
-      
-      // Clean up name
-      name = name.replace(/^View\s+/i, '').replace(/['']s profile$/i, '').trim();
-      
-      // Clean up description - remove common noise
-      description = description.replace(/^View\s+/i, '').replace(/['']s profile$/i, '').trim();
-      
-      // Clean up company
-      company = company.replace(/^View\s+/i, '').replace(/['']s profile$/i, '').trim();
-      
-      // Validate name
-      if (name && name.length > 2 && !name.toLowerCase().includes('message')) {
+      if (details) {
         connections.set(url, { 
-          name, 
-          description: description || '',
-          company: company || '',
+          ...details,
+          company: '', // Will be extracted from profile page
           profileUrl: url, 
           email: null, 
           phone: null 

@@ -87,11 +87,10 @@ async function exportToCSV() {
   }
   
   // Build CSV content with username
-  const headers = ['Username', 'Name', 'Description', 'Company', 'Profile URL', 'Email', 'Phone', 'Scraped At'];
+  const headers = ['Username', 'Name', 'Company', 'Profile URL', 'Email', 'Phone', 'Scraped At'];
   const rows = entries.map(([username, conn]) => [
     username || '',
     conn.name || '',
-    conn.description || '',
     conn.company || '',
     conn.profileUrl || '',
     conn.email || '',
