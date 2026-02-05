@@ -14,6 +14,7 @@ const resumeBtn = document.getElementById('resumeBtn');
 const stopBtn = document.getElementById('stopBtn');
 const saveConfigBtn = document.getElementById('saveConfig');
 const testTelegramBtn = document.getElementById('testTelegram');
+const checkQueueBtn = document.getElementById('checkQueue');
 const exportCsvBtn = document.getElementById('exportCsvBtn');
 const botTokenInput = document.getElementById('botToken');
 const chatIdInput = document.getElementById('chatId');
@@ -150,6 +151,18 @@ async function testTelegram() {
   });
 }
 
+async function checkQueue() {
+  chrome.runtime.sendMessage({ type: 'CHECK_QUEUE' }, (response) => {
+    if (response) {
+      addStatus(`📊 Queue: ${response.queueLength} messages pending`, 'info');
+      addStatus(`Processing: ${response.isProcessing ? 'Yes' : 'No'}`, 'info');
+      if (response.queueLength > 0) {
+        addStatus('Messages will auto-retry every 30s', 'info');
+      }
+    }
+  });
+}
+
 // ============================================
 // Check Tab and Config
 // ============================================
@@ -182,8 +195,11 @@ async function startExtraction() {
   
   // Check if we're on LinkedIn at all
   if (!tab.url.includes('linkedin.com')) {
-    addStatus('Please open LinkedIn first', 'error');
-    return;
+    addStatus('Opening LinkedIn Connections page...', 'info');
+    await chrome.tabs.update(tab.id, { 
+      url: 'https://www.linkedin.com/mynetwork/invite-connect/connections/' 
+    });
+    await sleep(4000); // Extra time for LinkedIn to load
   }
   
   setButtonsDisabled(true);
@@ -223,8 +239,11 @@ async function startFullScrape() {
   
   // Check if we're on LinkedIn at all
   if (!tab.url.includes('linkedin.com')) {
-    addStatus('Please open LinkedIn first', 'error');
-    return;
+    addStatus('Opening LinkedIn Connections page...', 'info');
+    await chrome.tabs.update(tab.id, { 
+      url: 'https://www.linkedin.com/mynetwork/invite-connect/connections/' 
+    });
+    await sleep(4000); // Extra time for LinkedIn to load
   }
   
   setButtonsDisabled(true);
@@ -240,7 +259,7 @@ async function startFullScrape() {
     });
     
     // Wait for page to load, then start extraction
-    await sleep(3000);
+    await sleep(5000);
   }
   
   try {
@@ -424,6 +443,7 @@ function getFriendlyErrorMessage(errorType, details) {
 
 saveConfigBtn.addEventListener('click', saveConfig);
 testTelegramBtn.addEventListener('click', testTelegram);
+checkQueueBtn.addEventListener('click', checkQueue);
 startBtn.addEventListener('click', startExtraction);
 fullScrapeBtn.addEventListener('click', startFullScrape);
 resumeBtn.addEventListener('click', resumeScrape);

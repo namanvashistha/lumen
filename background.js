@@ -66,22 +66,25 @@ async function processMessageQueue() {
     const message = messageQueue[0];
     
     try {
-      await sendTelegramMessage(message.botToken, message.chatId, message.text, 1);
+      await sendTelegramMessage(message.botToken, message.chatId, message.text, MAX_RETRIES);
+      console.log(`[Lumen] Successfully sent message (${messageQueue.length - 1} remaining)`);
       messageQueue.shift(); // Remove successful message
       await chrome.storage.local.set({ lumen_message_queue: messageQueue });
       await new Promise(resolve => setTimeout(resolve, BATCH_DELAY));
     } catch (err) {
       message.attempts++;
+      console.error(`[Lumen] Message send failed (attempt ${message.attempts}):`, err.message);
       
       if (message.attempts >= MAX_OFFLINE_RETRIES) {
         console.error('[Lumen] Message failed after max retries, discarding:', err);
+        notifyPopup('TELEGRAM_ERROR', { error: `Failed to send: ${err.message}` });
         messageQueue.shift();
         await chrome.storage.local.set({ lumen_message_queue: messageQueue });
       } else {
-        console.log(`[Lumen] Message failed, will retry (${message.attempts}/${MAX_OFFLINE_RETRIES})`);
+        console.log(`[Lumen] Will retry in ${OFFLINE_RETRY_INTERVAL/1000}s (${message.attempts}/${MAX_OFFLINE_RETRIES})`);
         notifyPopup('STATUS', { 
-          text: `Offline mode - ${messageQueue.length} messages queued`, 
-          level: 'info' 
+          text: `Telegram error - retrying... (${messageQueue.length} queued)`, 
+          level: 'error' 
         });
         break; // Stop processing, will retry later
       }
@@ -101,6 +104,8 @@ async function sendTelegramMessage(botToken, chatId, text, retries = MAX_RETRIES
   
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
+      console.log(`[Lumen] Sending to Telegram (attempt ${attempt}/${retries})...`);
+      
       const response = await fetch(url, {
         method: 'POST',
         headers: {
@@ -114,12 +119,15 @@ async function sendTelegramMessage(botToken, chatId, text, retries = MAX_RETRIES
         }),
       });
       
+      const data = await response.json();
+      
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.description || 'Telegram API error');
+        console.error('[Lumen] Telegram API error:', data);
+        throw new Error(data.description || `HTTP ${response.status}: ${JSON.stringify(data)}`);
       }
       
-      return response.json();
+      console.log('[Lumen] Telegram message sent successfully');
+      return data;
       
     } catch (err) {
       console.warn(`[Lumen] Telegram attempt ${attempt}/${retries} failed:`, err.message);
@@ -422,6 +430,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'TEST_TELEGRAM':
       testTelegramConnection().then(result => {
         sendResponse(result);
+      });
+      return true;
+      
+    case 'CHECK_QUEUE':
+      sendResponse({
+        queueLength: messageQueue.length,
+        isProcessing: isProcessingQueue
       });
       return true;
       
