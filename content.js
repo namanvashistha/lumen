@@ -33,14 +33,21 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// Log to popup only (not Telegram)
 function log(msg) {
   console.log(`[Lumen] ${msg}`);
   chrome.runtime.sendMessage({ type: 'STATUS', text: msg });
 }
 
+// Log errors to popup
 function logError(msg) {
   console.error(`[Lumen] ${msg}`);
   chrome.runtime.sendMessage({ type: 'STATUS', text: msg, level: 'error' });
+}
+
+// Send important events to Telegram (start, complete, errors)
+function notifyTelegram(msg) {
+  chrome.runtime.sendMessage({ type: 'TELEGRAM_NOTIFY', text: msg });
 }
 
 // ============================================
@@ -147,41 +154,77 @@ async function extractConnectionsList() {
       let name = '';
       let description = '';
       
-      // LinkedIn structure: usually has multiple spans
-      // First span[aria-hidden] is the name
-      // Second span or nearby element has the headline/description
-      const allSpans = link.querySelectorAll('span[aria-hidden="true"]');
+      // LinkedIn connection cards have:
+      // - Name in the link itself (visible text, not aria-hidden)
+      // - Description/occupation in a separate span outside the link
       
-      if (allSpans.length >= 1) {
-        // First span is usually the name
-        name = allSpans[0].textContent.trim();
-        
-        // If there are more spans, second one might be description
-        if (allSpans.length >= 2) {
-          description = allSpans[1].textContent.trim();
+      // Get the parent container first
+      const container = link.closest('li') || link.closest('[class*="card"]') || link.parentElement?.parentElement;
+      
+      // Method 1: Find name from visible span (not aria-hidden) inside link
+      const visibleSpans = link.querySelectorAll('span:not([aria-hidden])');
+      for (const span of visibleSpans) {
+        const text = span.textContent.trim();
+        if (text && text.length > 2 && text.length < 100) {
+          name = text;
+          break;
         }
-      } else {
-        // Fallback: try to split the text content
-        const fullText = link.textContent.trim();
-        const lines = fullText.split('\n').map(l => l.trim()).filter(l => l);
-        if (lines.length >= 1) name = lines[0];
-        if (lines.length >= 2) description = lines[1];
       }
       
-      // If still no description, try to find it in parent container
-      if (!description) {
-        const container = link.closest('li') || link.closest('[class*="card"]');
-        if (container) {
-          // Look for spans that aren't the name
-          const spans = container.querySelectorAll('span');
-          for (const span of spans) {
+      // Method 2: If no visible span, try first line of link text
+      if (!name) {
+        const linkText = link.textContent.trim();
+        // Split by newlines and take first non-empty line
+        const lines = linkText.split('\n').map(l => l.trim()).filter(l => l && l.length > 2);
+        if (lines.length > 0) {
+          name = lines[0];
+        }
+      }
+      
+      // Now find description in container (outside the name link)
+      if (container) {
+        // Look for occupation/headline spans with specific classes
+        const occupationSelectors = [
+          'span[class*="occupation"]',
+          'span[class*="headline"]', 
+          'span[class*="subtitle"]',
+          '.mn-connection-card__occupation',
+          '.t-14.t-black--light.t-normal'
+        ];
+        
+        for (const selector of occupationSelectors) {
+          const el = container.querySelector(selector);
+          if (el) {
+            description = el.textContent.trim();
+            break;
+          }
+        }
+        
+        // Fallback: find spans that are NOT inside the name link
+        if (!description) {
+          const allContainerSpans = container.querySelectorAll('span');
+          for (const span of allContainerSpans) {
+            // Skip if this span is inside the name link
+            if (link.contains(span)) continue;
+            
             const text = span.textContent.trim();
-            if (text && text !== name && text.length > 10 && text.length < 200) {
+            // Must be different from name and reasonable length
+            if (text && text !== name && !name.includes(text) && text.length > 5 && text.length < 200) {
+              // Skip common noise
+              if (text.includes('View') && text.includes('profile')) continue;
+              if (text.toLowerCase() === 'message') continue;
+              if (text.match(/^\d+\s*(mutual|connections)/i)) continue;
+              if (text.match(/^Connected\s/i)) continue;
               description = text;
               break;
             }
           }
         }
+      }
+      
+      // Clean up name - remove any description that got concatenated
+      if (description && name.includes(description)) {
+        name = name.replace(description, '').trim();
       }
       
       // Clean up name
@@ -391,18 +434,16 @@ async function continueProfileScraping() {
   // Save to persistent database
   await saveContactToDB(conn);
   
-  // Send to Telegram
+  // Notify popup of progress (no Telegram for contact data)
+  const emailIcon = email ? '📧' : '';
+  const phoneIcon = phone ? '📱' : '';
   chrome.runtime.sendMessage({
-    type: 'SEND_CONTACT_TO_TELEGRAM',
-    contact: {
-      name: conn.name,
-      description: conn.description,
-      profileUrl: conn.profileUrl,
-      email: email,
-      phone: phone,
-      index: index + 1,
-      total: connections.length
-    }
+    type: 'CONTACT_SCRAPED',
+    name: conn.name,
+    hasEmail: !!email,
+    hasPhone: !!phone,
+    index: index + 1,
+    total: connections.length
   });
   
   // Move to next - skip already scraped
@@ -429,6 +470,7 @@ async function continueProfileScraping() {
   } else {
     // Done!
     log('All profiles scraped!');
+    notifyTelegram(`✅ Scraping complete! ${connections.length} profiles processed.`);
     await clearProgress();
     chrome.runtime.sendMessage({
       type: 'SCRAPING_COMPLETE',
@@ -456,12 +498,7 @@ async function startListExtraction() {
     return;
   }
   
-  // Send to Telegram
-  chrome.runtime.sendMessage({
-    type: 'SEND_TO_TELEGRAM',
-    connections: connections
-  });
-  
+  // Notify popup (no Telegram for data - only observability)
   chrome.runtime.sendMessage({
     type: 'EXTRACTION_COMPLETE',
     count: connections.length,
@@ -471,9 +508,11 @@ async function startListExtraction() {
 
 async function startFullScrape() {
   log('Starting full scrape...');
+  notifyTelegram('🚀 Starting full scrape...');
   
   if (!window.location.href.includes('linkedin.com/mynetwork/invite-connect/connections')) {
     logError('Not on connections page!');
+    notifyTelegram('❌ Error: Not on connections page');
     return;
   }
   
@@ -481,6 +520,7 @@ async function startFullScrape() {
   
   if (connections.length === 0) {
     logError('No connections found!');
+    notifyTelegram('❌ Error: No connections found on page');
     return;
   }
   
@@ -506,6 +546,7 @@ async function startFullScrape() {
   
   if (startIndex >= connections.length) {
     log('✅ All connections already scraped!');
+    notifyTelegram('✅ All connections already in database!');
     chrome.runtime.sendMessage({
       type: 'SCRAPING_COMPLETE',
       connections: connections,
@@ -514,7 +555,9 @@ async function startFullScrape() {
     return;
   }
   
+  const toScrape = connections.length - startIndex;
   log(`Found ${connections.length} connections. Starting from #${startIndex + 1}...`);
+  notifyTelegram(`📊 Found ${connections.length} connections, ${toScrape} to scrape (${skipped} already done)`);
   await saveProgress(connections, startIndex);
   await sleep(2000);
   await scrapeProfile(connections[startIndex], startIndex, connections.length);

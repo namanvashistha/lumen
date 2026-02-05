@@ -77,16 +77,19 @@ async function loadConfig() {
 async function exportToCSV() {
   const db = await chrome.storage.local.get('lumen_contacts_db');
   const contactsDb = db.lumen_contacts_db || {};
-  const contacts = Object.values(contactsDb);
   
-  if (contacts.length === 0) {
+  // Get entries with username as key
+  const entries = Object.entries(contactsDb);
+  
+  if (entries.length === 0) {
     addStatus('No contacts in database to export', 'error');
     return;
   }
   
-  // Build CSV content
-  const headers = ['Name', 'Description', 'Profile URL', 'Email', 'Phone', 'Scraped At'];
-  const rows = contacts.map(conn => [
+  // Build CSV content with username
+  const headers = ['Username', 'Name', 'Description', 'Profile URL', 'Email', 'Phone', 'Scraped At'];
+  const rows = entries.map(([username, conn]) => [
+    username || '',
     conn.name || '',
     conn.description || '',
     conn.profileUrl || '',
@@ -109,7 +112,7 @@ async function exportToCSV() {
   a.click();
   URL.revokeObjectURL(url);
   
-  addStatus(`📥 Exported ${contacts.length} contacts to CSV`, 'success');
+  addStatus(`📥 Exported ${entries.length} contacts to CSV`, 'success');
 }
 
 async function updateDbCount() {
@@ -397,11 +400,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       
     case 'EXTRACTION_COMPLETE':
       addStatus(`List extracted: ${message.count} connections`, 'success');
-      if (message.connections) {
-        lastExtractedConnections = message.connections;
-        chrome.storage.local.set({ lumen_last_extraction: message.connections });
-        exportCsvBtn.style.display = 'block';
-      }
+      updateDbCount();
       setButtonsDisabled(false);
       updateProgress(0, 0);
       break;
@@ -413,16 +412,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       updateProgress(0, 0);
       break;
       
-    case 'TELEGRAM_SENT':
-      addStatus(`Sent batch ${message.batch}/${message.total}`, 'success');
-      break;
-      
-    case 'CONTACT_SENT':
+    case 'CONTACT_SCRAPED':
       const emailIcon = message.hasEmail ? '📧' : '';
       const phoneIcon = message.hasPhone ? '📱' : '';
       addStatus(`[${message.index}/${message.total}] ${message.name} ${emailIcon}${phoneIcon}`, 'success');
       updateProgress(message.index, message.total);
-      updateDbCount(); // Refresh count
+      updateDbCount();
       break;
       
     case 'TELEGRAM_ERROR':

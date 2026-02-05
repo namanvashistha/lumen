@@ -221,6 +221,27 @@ function formatContactMessage(contact) {
 // Send Functions
 // ============================================
 
+// Simple observability message (for start, complete, errors)
+async function sendObservabilityMessage(text) {
+  try {
+    const config = await chrome.storage.local.get(['telegramBotToken', 'telegramChatId']);
+    
+    if (!config.telegramBotToken || !config.telegramChatId) {
+      console.log('[Lumen] Telegram not configured, skipping notification');
+      return;
+    }
+    
+    const timestamp = new Date().toLocaleTimeString();
+    const msg = `🔔 <b>Lumen</b> [${timestamp}]\n\n${text}`;
+    
+    await queueMessage(config.telegramBotToken, config.telegramChatId, msg);
+    console.log('[Lumen] Observability message sent:', text);
+    
+  } catch (err) {
+    console.error('[Lumen] Failed to send observability message:', err);
+  }
+}
+
 async function sendConnectionsToTelegram(connections) {
   try {
     const config = await chrome.storage.local.get(['telegramBotToken', 'telegramChatId']);
@@ -444,6 +465,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         isProcessing: isProcessingQueue
       });
       return true;
+      
+    case 'TELEGRAM_NOTIFY':
+      // Send important observability messages to Telegram
+      sendObservabilityMessage(message.text);
+      sendResponse({ status: 'sent' });
+      break;
       
     case 'SEND_TO_TELEGRAM':
       sendConnectionsToTelegram(message.connections);
