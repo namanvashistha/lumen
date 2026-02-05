@@ -19,7 +19,7 @@ console.log('[Lumen] Instance started');
 // ============================================
 const CONFIG = {
   SCROLL_DELAY: 4000, // Wait 4s for LinkedIn to load more
-  PROFILE_DELAY: 75000, // 75 seconds between profiles
+  PROFILE_DELAY: 10, // 75 seconds between profiles
   PAGE_WAIT: 4000,
   MODAL_WAIT: 3000,
   MAX_RETRIES: 2,
@@ -95,6 +95,7 @@ async function saveContactToDB(contact) {
   db[username] = {
     name: contact.name,
     description: contact.description || '',
+    company: contact.company || '',
     profileUrl: contact.profileUrl,
     email: contact.email || null,
     phone: contact.phone || null,
@@ -181,7 +182,9 @@ async function extractConnectionsList() {
         }
       }
       
-      // Now find description in container (outside the name link)
+      // Now find description and company in container (outside the name link)
+      let company = '';
+      
       if (container) {
         // Look for occupation/headline spans with specific classes
         const occupationSelectors = [
@@ -200,22 +203,48 @@ async function extractConnectionsList() {
           }
         }
         
-        // Fallback: find spans that are NOT inside the name link
-        if (!description) {
+        // Look for company name - usually in a separate element
+        const companySelectors = [
+          'span[class*="company"]',
+          'span[class*="organization"]',
+          '.mn-connection-card__company',
+          '.entity-result__primary-subtitle',
+          'span.t-black--light'
+        ];
+        
+        for (const selector of companySelectors) {
+          const el = container.querySelector(selector);
+          if (el) {
+            const text = el.textContent.trim();
+            // Make sure it's not the same as description
+            if (text && text !== description) {
+              company = text;
+              break;
+            }
+          }
+        }
+        
+        // Fallback: find secondary spans that aren't name or description
+        if (!company) {
           const allContainerSpans = container.querySelectorAll('span');
+          let foundDescription = false;
           for (const span of allContainerSpans) {
-            // Skip if this span is inside the name link
             if (link.contains(span)) continue;
             
             const text = span.textContent.trim();
-            // Must be different from name and reasonable length
-            if (text && text !== name && !name.includes(text) && text.length > 5 && text.length < 200) {
-              // Skip common noise
-              if (text.includes('View') && text.includes('profile')) continue;
-              if (text.toLowerCase() === 'message') continue;
-              if (text.match(/^\d+\s*(mutual|connections)/i)) continue;
-              if (text.match(/^Connected\s/i)) continue;
+            if (!text || text.length < 3 || text.length > 200) continue;
+            if (text === name || name.includes(text)) continue;
+            if (text.includes('View') && text.includes('profile')) continue;
+            if (text.toLowerCase() === 'message') continue;
+            if (text.match(/^\d+\s*(mutual|connections)/i)) continue;
+            if (text.match(/^Connected\s/i)) continue;
+            
+            // First valid span is description, second is company
+            if (!foundDescription && !description) {
               description = text;
+              foundDescription = true;
+            } else if (foundDescription && text !== description) {
+              company = text;
               break;
             }
           }
@@ -233,11 +262,15 @@ async function extractConnectionsList() {
       // Clean up description - remove common noise
       description = description.replace(/^View\s+/i, '').replace(/['']s profile$/i, '').trim();
       
+      // Clean up company
+      company = company.replace(/^View\s+/i, '').replace(/['']s profile$/i, '').trim();
+      
       // Validate name
       if (name && name.length > 2 && !name.toLowerCase().includes('message')) {
         connections.set(url, { 
           name, 
           description: description || '',
+          company: company || '',
           profileUrl: url, 
           email: null, 
           phone: null 
@@ -393,6 +426,46 @@ async function extractContactInfo() {
   return { email, phone };
 }
 
+async function extractExperience() {
+  log('Extracting experience...');
+  
+  let experienceSection = document.getElementById('experience');
+  
+  // Fallback: Find by header text if ID is missing
+  if (!experienceSection) {
+    const headers = Array.from(document.querySelectorAll('h2, h3, span'));
+    for (const h of headers) {
+      if (h.innerText.trim() === 'Experience') {
+        experienceSection = h.closest('section') || h.closest('div.pvs-list__outer-container') || h.parentElement;
+        log('  Found experience section by text header');
+        break;
+      }
+    }
+  }
+  
+  if (!experienceSection) {
+    log('  No experience section found');
+    return null;
+  }
+  
+  // Strategy: Strict Logo Aria-Label Only
+  // Selector: a[href*="/company/"] -> figure[aria-label]
+  // We take the first one found in the section
+  const firstCompanyLogo = experienceSection.querySelector('a[href*="/company/"] figure[aria-label]');
+  
+  if (firstCompanyLogo) {
+    const ariaLabel = firstCompanyLogo.getAttribute('aria-label');
+    if (ariaLabel) {
+      // Remove " logo" from end if exists (case insensitive)
+      const companyName = ariaLabel.replace(/\s+logo$/i, '').trim();
+      log(`  Match via logo aria-label: ${companyName}`);
+      return companyName;
+    }
+  }
+  
+  log('  No company logo with aria-label found (strict mode)');
+  return null;
+}
 // ============================================
 // Profile Scraping
 // ============================================
@@ -427,8 +500,15 @@ async function continueProfileScraping() {
   
   // Extract contact info
   const { email, phone } = await extractContactInfo();
+  
+  // Extract experience/company
+  const company = await extractExperience();
+  
   conn.email = email;
   conn.phone = phone;
+  if (company) {
+    conn.company = company; // Update with more reliable company name from profile
+  }
   conn.scraped = true;
   
   // Save to persistent database
