@@ -8,19 +8,22 @@
 // ============================================
 if (window.lumenRunning) {
   console.log('[Lumen] Already running, stopping duplicate');
-  throw new Error('Duplicate instance blocked');
+  // Don't just throw, actually stop execution
+  (function() { return; })();
 }
 window.lumenRunning = true;
+console.log('[Lumen] Instance started');
 
 // ============================================
 // Simple Configuration
 // ============================================
 const CONFIG = {
-  SCROLL_DELAY: 3000,
+  SCROLL_DELAY: 4000, // Wait 4s for LinkedIn to load more
   PROFILE_DELAY: 75000, // 75 seconds between profiles
   PAGE_WAIT: 4000,
   MODAL_WAIT: 3000,
   MAX_RETRIES: 2,
+  MAX_NO_CHANGE: 5, // Allow 5 scrolls with no new content before stopping
 };
 
 // ============================================
@@ -72,39 +75,131 @@ async function extractConnectionsList() {
   const connections = new Map();
   let noChangeCount = 0;
   let scrolls = 0;
+  let previousHeight = 0;
   
-  while (scrolls < 100 && noChangeCount < 3) {
+  // Find the scrollable container (LinkedIn uses a specific container)
+  const scrollContainer = document.querySelector('.scaffold-finite-scroll__content') || 
+                          document.querySelector('main') || 
+                          window;
+  
+  while (scrolls < 150 && noChangeCount < CONFIG.MAX_NO_CHANGE) {
     scrolls++;
     
-    // Find all profile links
-    const links = document.querySelectorAll('a[href*="/in/"]');
+    // Extract connections from current view
     const startCount = connections.size;
     
+    // Find all profile links in the main content area
+    const links = document.querySelectorAll('a[href*="/in/"]');
+    
     links.forEach(link => {
+      // Only process links that are in the connections list (not header/footer)
+      const isInMainContent = link.closest('main') !== null;
+      if (!isInMainContent) return;
+      
       const url = link.href.split('?')[0].replace(/\/$/, '');
       if (!url.includes('/in/')) return;
       
-      // Get name from link text or nearby span
-      let name = link.textContent.trim();
-      const span = link.querySelector('span[aria-hidden="true"]');
-      if (span) name = span.textContent.trim();
+      // Skip if already have this connection
+      if (connections.has(url)) return;
       
+      // Extract name and description separately
+      let name = '';
+      let description = '';
+      
+      // LinkedIn structure: usually has multiple spans
+      // First span[aria-hidden] is the name
+      // Second span or nearby element has the headline/description
+      const allSpans = link.querySelectorAll('span[aria-hidden="true"]');
+      
+      if (allSpans.length >= 1) {
+        // First span is usually the name
+        name = allSpans[0].textContent.trim();
+        
+        // If there are more spans, second one might be description
+        if (allSpans.length >= 2) {
+          description = allSpans[1].textContent.trim();
+        }
+      } else {
+        // Fallback: try to split the text content
+        const fullText = link.textContent.trim();
+        const lines = fullText.split('\n').map(l => l.trim()).filter(l => l);
+        if (lines.length >= 1) name = lines[0];
+        if (lines.length >= 2) description = lines[1];
+      }
+      
+      // If still no description, try to find it in parent container
+      if (!description) {
+        const container = link.closest('li') || link.closest('[class*="card"]');
+        if (container) {
+          // Look for spans that aren't the name
+          const spans = container.querySelectorAll('span');
+          for (const span of spans) {
+            const text = span.textContent.trim();
+            if (text && text !== name && text.length > 10 && text.length < 200) {
+              description = text;
+              break;
+            }
+          }
+        }
+      }
+      
+      // Clean up name
       name = name.replace(/^View\s+/i, '').replace(/['']s profile$/i, '').trim();
       
+      // Clean up description - remove common noise
+      description = description.replace(/^View\s+/i, '').replace(/['']s profile$/i, '').trim();
+      
+      // Validate name
       if (name && name.length > 2 && !name.toLowerCase().includes('message')) {
-        connections.set(url, { name, profileUrl: url, email: null, phone: null });
+        connections.set(url, { 
+          name, 
+          description: description || '',
+          profileUrl: url, 
+          email: null, 
+          phone: null 
+        });
       }
     });
     
-    if (connections.size === startCount) {
-      noChangeCount++;
+    const newCount = connections.size - startCount;
+    
+    if (newCount > 0) {
+      log(`Scroll #${scrolls}: Found ${newCount} new (${connections.size} total)`);
+      noChangeCount = 0; // Reset counter when we find new ones
     } else {
-      noChangeCount = 0;
+      noChangeCount++;
+      log(`Scroll #${scrolls}: No new connections (${noChangeCount}/${CONFIG.MAX_NO_CHANGE})`);
     }
     
-    log(`Scroll ${scrolls}: Found ${connections.size} connections`);
+    // Check if page height changed
+    const currentHeight = document.documentElement.scrollHeight;
+    if (currentHeight === previousHeight) {
+      log('  Page height unchanged');
+    } else {
+      log(`  Page grew: ${previousHeight} → ${currentHeight}`);
+      previousHeight = currentHeight;
+    }
     
-    window.scrollBy({ top: 800, behavior: 'smooth' });
+    // Stop if we've reached the end
+    if (noChangeCount >= CONFIG.MAX_NO_CHANGE) {
+      log('Reached end of connections list');
+      break;
+    }
+    
+    // Scroll down aggressively
+    if (scrollContainer === window) {
+      window.scrollTo({
+        top: document.documentElement.scrollHeight,
+        behavior: 'smooth'
+      });
+    } else {
+      scrollContainer.scrollTop = scrollContainer.scrollHeight;
+    }
+    
+    // Also scroll the window just in case
+    window.scrollBy({ top: 1000, behavior: 'smooth' });
+    
+    // Wait longer for LinkedIn to load more content
     await sleep(CONFIG.SCROLL_DELAY);
   }
   
@@ -146,13 +241,67 @@ async function extractContactInfo() {
   const mailtoLink = document.querySelector('a[href^="mailto:"]');
   if (mailtoLink) {
     email = mailtoLink.href.replace('mailto:', '').split('?')[0];
+    log(`  Found email in mailto link: ${email}`);
+  }
+  
+  // If no mailto link, search for email pattern in text
+  if (!email) {
+    const bodyText = document.body.innerText;
+    const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+    const emailMatches = bodyText.match(emailRegex);
+    if (emailMatches && emailMatches.length > 0) {
+      email = emailMatches[0];
+      log(`  Found email in text: ${email}`);
+    }
   }
   
   // Extract phone
   let phone = null;
+  
+  // First try tel: link
   const telLink = document.querySelector('a[href^="tel:"]');
   if (telLink) {
     phone = telLink.textContent.trim();
+    log(`  Found phone in tel link: ${phone}`);
+  }
+  
+  // If no tel: link, search for phone patterns in the page
+  if (!phone) {
+    log('  Searching for phone in text...');
+    const bodyText = document.body.innerText;
+    
+    // Look for "Phone" section and extract number after it
+    const phoneLines = bodyText.split('\n');
+    for (let i = 0; i < phoneLines.length; i++) {
+      const line = phoneLines[i].trim();
+      
+      // If we find a line that says "Phone", check the next few lines
+      if (line.toLowerCase() === 'phone') {
+        for (let j = i + 1; j < Math.min(i + 3, phoneLines.length); j++) {
+          const nextLine = phoneLines[j].trim();
+          // Match phone patterns like: +91-7798950524, (123) 456-7890, +1 234 567 8900
+          const phoneRegex = /[\+\(]?[0-9][\d\s\(\)\-\.]{7,}[0-9]/;
+          if (phoneRegex.test(nextLine)) {
+            phone = nextLine.split('(')[0].trim(); // Remove labels like "(Home)"
+            log(`  Found phone after "Phone" label: ${phone}`);
+            break;
+          }
+        }
+        if (phone) break;
+      }
+    }
+  }
+  
+  // Last resort: find any phone-like pattern in the entire page
+  if (!phone) {
+    const bodyText = document.body.innerText;
+    // Match international phone numbers: +91-1234567890, +1 (123) 456-7890, etc.
+    const phoneRegex = /\+\d{1,4}[\s\-]?\(?\d{1,4}\)?[\s\-]?\d{3,4}[\s\-]?\d{4,}/;
+    const match = bodyText.match(phoneRegex);
+    if (match) {
+      phone = match[0];
+      log(`  Found phone pattern: ${phone}`);
+    }
   }
   
   log(`Extracted - Email: ${email || 'none'}, Phone: ${phone || 'none'}`);
@@ -202,6 +351,7 @@ async function continueProfileScraping() {
     type: 'SEND_CONTACT_TO_TELEGRAM',
     contact: {
       name: conn.name,
+      description: conn.description,
       profileUrl: conn.profileUrl,
       email: email,
       phone: phone,
@@ -299,6 +449,11 @@ async function resumeScrape() {
 // Message Listener
 // ============================================
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!window.lumenRunning) {
+    console.log('[Lumen] Not initialized, ignoring message');
+    return;
+  }
+  
   switch (message.action) {
     case 'START_EXTRACTION':
       startListExtraction();

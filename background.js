@@ -195,6 +195,11 @@ function escapeHtml(text) {
 function formatContactMessage(contact) {
   let msg = `📇 <b>Contact ${contact.index}/${contact.total}</b>\n\n`;
   msg += `<b>Name:</b> ${escapeHtml(contact.name)}\n`;
+  
+  if (contact.description) {
+    msg += `<b>Title:</b> ${escapeHtml(contact.description)}\n`;
+  }
+  
   msg += `<b>Profile:</b> ${contact.profileUrl}\n`;
   
   if (contact.email) {

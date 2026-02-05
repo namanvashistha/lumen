@@ -84,9 +84,10 @@ function exportToCSV() {
   }
   
   // Build CSV content
-  const headers = ['Name', 'Profile URL', 'Email', 'Phone', 'Scraped'];
+  const headers = ['Name', 'Description', 'Profile URL', 'Email', 'Phone', 'Scraped'];
   const rows = lastExtractedConnections.map(conn => [
     conn.name || '',
+    conn.description || '',
     conn.profileUrl || '',
     conn.email || '',
     conn.phone || '',
@@ -323,6 +324,7 @@ async function stopScrape() {
 function updateProgress(current, total) {
   if (total === 0) {
     progressSection.style.display = 'none';
+    scrapeStartTime = null;
     return;
   }
   
@@ -331,8 +333,13 @@ function updateProgress(current, total) {
   progressBar.style.width = percent + '%';
   progressText.textContent = `${current} / ${total} (${percent}%)`;
   
+  // Set start time on first progress update
+  if (!scrapeStartTime && current > 0) {
+    scrapeStartTime = Date.now();
+  }
+  
   // Calculate ETA
-  if (scrapeStartTime && current > 0) {
+  if (scrapeStartTime && current > 1) {
     const elapsed = Date.now() - scrapeStartTime;
     const avgTime = elapsed / current;
     const remaining = total - current;
